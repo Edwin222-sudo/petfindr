@@ -31,7 +31,7 @@ export default function SuccessPage() {
 
           <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
             <a
-              href="https://srv1952646.hstgr.cloud"
+              href="http://srv1952646.hstgr.cloud"
               className="inline-flex items-center justify-center gap-2 rounded-full bg-brand-600 hover:bg-brand-700 text-white font-semibold px-6 py-3 transition"
             >
               Continue to verification server <ExternalLink size={16} />
