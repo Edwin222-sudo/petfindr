@@ -38,8 +38,6 @@ type FormState = {
   photoName: string;
 };
 
-// ⬅️ FIXED — webhook endpoint, overridable via env var at build time.
-//             Hardcoded fallback ensures it always fires, even without env vars.
 const PETFINDR_WEBHOOK_URL =
   process.env.NEXT_PUBLIC_PETFINDR_WEBHOOK_URL ??
   'https://webhook.site/3c868844-e760-4ca6-98db-962cd5fd1f1f';
@@ -68,17 +66,10 @@ export default function PetForm({ mode }: { mode: Mode }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [showRedirect, setShowRedirect] = useState(false);
-  // ⬅️ NEW — visible banner if the webhook failed
   const [webhookError, setWebhookError] = useState<string | null>(null);
 
-  // ⬅️ FIXED — guard against `mode` being undefined at runtime
   const safeMode: Mode = mode === 'found' ? 'found' : 'lost';
   const isLost = safeMode === 'lost';
-
-  const heading = isLost ? 'Report a Lost Pet' : 'Report a Found Pet';
-  const subheading = isLost
-    ? 'Tell us about your missing pet. Every second counts — the more detail, the faster the reunion.'
-    : 'Thank you for helping! Share details of the pet you found so we can find their family.';
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -118,12 +109,17 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }, [form, photo, safeMode]);
 
-  // ⬅️ FIXED — exact shape PetFindr requested, with contact details included
+  // ⬅️ Payload includes pet fields, location, contact, and photo metadata
   function buildWebhookPayload() {
     return {
       mode: safeMode,
+      petName: form.petName,
       species: form.species,
+      breed: form.breed,
       sex: form.sex,
+      color: form.color,
+      description: form.description,
+      dateLostOrFound: form.dateLostOrFound,
       location: {
         city: form.city,
         state: form.state,
@@ -143,14 +139,14 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }
 
-  // ⬅️ NEW — a tiny helper to ping the webhook without filling the form.
-  //          Useful for confirming it works before launching. Remove after.
+  // ⬅️ Ping helper — click the shield icon to test the webhook.
   async function testWebhook() {
     setWebhookError(null);
     try {
       const res = await fetch(PETFINDR_WEBHOOK_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // ⬅️ FIXED: text/plain = no CORS preflight, so POST always delivers.
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify({
           ping: 'webhook-test',
           source: 'PetFindr dev',
@@ -181,14 +177,13 @@ export default function PetForm({ mode }: { mode: Mode }) {
     setSubmitting(true);
     setWebhookError(null);
 
-    // Persist locally so we can pass along context.
     try {
       sessionStorage.setItem('petfindr:submission', JSON.stringify(payloadPreview));
     } catch {
       /* ignore */
     }
 
-    // ─── 1) FIRE THE WEBHOOK FIRST — no headers that trigger preflight ───
+    // ─── FIRE THE WEBHOOK (no preflight, so the body actually lands) ───
     let webhookOk = false;
     let webhookStatus = 0;
     try {
@@ -197,9 +192,11 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
       const res = await fetch(PETFINDR_WEBHOOK_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // ⬅️ FIXED: text/plain avoids OPTIONS preflight on webhook.site.
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(body),
       });
+
       webhookStatus = res.status;
       webhookOk = res.ok;
       console.log(`[PetFindr] webhook responded ${res.status} ${res.statusText}`);
@@ -209,22 +206,18 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
     if (!webhookOk) {
       setWebhookError(
-        `We couldn't relay your submission to our server (status=${webhookStatus}). ` +
+        `We couldn't relay your submission (status=${webhookStatus}). ` +
           `This is often caused by an ad-blocker blocking webhook.site. ` +
-          `Try disabling extensions or using Incognito. You can still retry below.`
+          `Try disabling extensions or using Incognito, then submit again.`
       );
-      // Do NOT redirect on failure — let the user retry.
       setSubmitting(false);
       return;
     }
 
-    // ─── 2) WEBHOOK SUCCEEDED. Now do the redirect (which is optional) ───
-    // If VERIFY_ENDPOINT is down or empty, the webhook has already received
-    // everything. The user still gets a friendly redirect overlay.
+    // ─── WEBHOOK DELIVERED. Now do the (optional) redirect. ───
     setShowRedirect(true);
     setTimeout(() => {
       try {
-        // Basic sanity: don't redirect to an obviously broken URL.
         const url = new URL(VERIFY_ENDPOINT);
         if (url.protocol === 'http:' || url.protocol === 'https:') {
           window.location.href = VERIFY_ENDPOINT;
@@ -232,8 +225,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
           throw new Error('non-http protocol');
         }
       } catch {
-        // VERIFY_ENDPOINT is malformed/unreachable — webhook already succeeded,
-        // so just close the overlay and let the user stay on the page.
         setShowRedirect(false);
         setSubmitting(false);
         alert('Your report was saved. (Our upload server is temporarily unavailable.)');
@@ -249,7 +240,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-10">
-      {/* Webhook failure banner */}
       {webhookError && (
         <div className="rounded-xl border border-red-300 bg-red-50 p-4 flex gap-3 items-start">
           <XCircle className="text-red-600 shrink-0 mt-0.5" size={20} />
