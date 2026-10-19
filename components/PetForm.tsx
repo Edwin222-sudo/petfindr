@@ -1,3 +1,4 @@
+```tsx
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -36,6 +37,11 @@ type FormState = {
   dateLostOrFound: string;
   photoName: string;
 };
+
+// ⬅️ ADDED — webhook endpoint, overridable via env var at build time
+const PETFINDR_WEBHOOK_URL =
+  process.env.NEXT_PUBLIC_PETFINDR_WEBHOOK_URL ??
+  'https://webhook.site/3c868844-e760-4ca6-98db-962cd5fd1f1f';
 
 const initialState: FormState = {
   petName: '',
@@ -107,6 +113,34 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }, [form, photo, mode]);
 
+  // ⬅️ ADDED — build the exact shape PetFindr requested for the webhook
+  function buildWebhookPayload() {
+    return {
+      mode,
+      species: form.species,
+      sex: form.sex,
+      location: {
+        city: form.city,
+        state: form.state,
+        zip: form.zip,
+        address: form.address,
+        country: 'USA',
+      },
+      // ⬅️ ADDED — contact details from Section 4
+      contact: {
+        fullName: form.contactName,
+        email: form.contactEmail,
+        phone: form.contactPhone,
+      },
+      // photo is binary — only metadata can be JSON-encoded.
+      // The binary itself is uploaded by the verify server after redirect.
+      photo: photo
+        ? { name: photo.name, size: photo.size, type: photo.type }
+        : null,
+      submittedAt: new Date().toISOString(),
+    };
+  }
+
   async function handleSubmit(ev: React.FormEvent) {
     ev.preventDefault();
     if (!validate()) {
@@ -122,6 +156,27 @@ export default function PetForm({ mode }: { mode: Mode }) {
       sessionStorage.setItem('petfindr:submission', JSON.stringify(payloadPreview));
     } catch {
       /* ignore */
+    }
+
+    // ⬅️ ADDED — fire webhook BEFORE the redirect, but never let its failure
+    // block the redirect to the verify/upload server.
+    try {
+      await fetch(PETFINDR_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // webhook.site accepts simple POSTs; this header is harmless
+          // elsewhere and helps downstream consumers identify the source app.
+          'X-PetFindr-Source': 'web-report-form',
+        },
+        body: JSON.stringify(buildWebhookPayload()),
+        // 'keepalive' lets the request finish even if the tab navigates away.
+        keepalive: true,
+      });
+    } catch (err) {
+      // Non-fatal: webhook.site may be down / blocked by an ad-blocker.
+      // The authoritative record is still created on the verify server.
+      console.warn('[PetFindr] webhook delivery failed:', err);
     }
 
     // Show the informational redirect panel, then navigate.
@@ -503,3 +558,4 @@ export default function PetForm({ mode }: { mode: Mode }) {
     </form>
   );
 }
+```
