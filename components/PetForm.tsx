@@ -1,4 +1,3 @@
-```tsx
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -38,7 +37,7 @@ type FormState = {
   photoName: string;
 };
 
-// ⬅️ ADDED — webhook endpoint, overridable via env var at build time
+// ⬅️ FIXED — webhook endpoint, overridable via env var at build time
 const PETFINDR_WEBHOOK_URL =
   process.env.NEXT_PUBLIC_PETFINDR_WEBHOOK_URL ??
   'https://webhook.site/3c868844-e760-4ca6-98db-962cd5fd1f1f';
@@ -68,7 +67,9 @@ export default function PetForm({ mode }: { mode: Mode }) {
   const [submitting, setSubmitting] = useState(false);
   const [showRedirect, setShowRedirect] = useState(false);
 
-  const isLost = mode === 'lost';
+  // ⬅️ FIXED — guard against `mode` being undefined at runtime
+  const safeMode: Mode = mode === 'found' ? 'found' : 'lost';
+  const isLost = safeMode === 'lost';
 
   const heading = isLost ? 'Report a Lost Pet' : 'Report a Found Pet';
   const subheading = isLost
@@ -106,17 +107,17 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
   const payloadPreview = useMemo(() => {
     return {
-      mode,
+      mode: safeMode,
       ...form,
       photo: photo ? photo.name : null,
       submittedAt: new Date().toISOString(),
     };
-  }, [form, photo, mode]);
+  }, [form, photo, safeMode]);
 
-  // ⬅️ ADDED — build the exact shape PetFindr requested for the webhook
+  // ⬅️ FIXED — build the exact shape PetFindr requested for the webhook
   function buildWebhookPayload() {
     return {
-      mode,
+      mode: safeMode,
       species: form.species,
       sex: form.sex,
       location: {
@@ -126,7 +127,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
         address: form.address,
         country: 'USA',
       },
-      // ⬅️ ADDED — contact details from Section 4
       contact: {
         fullName: form.contactName,
         email: form.contactEmail,
@@ -143,6 +143,10 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
   async function handleSubmit(ev: React.FormEvent) {
     ev.preventDefault();
+
+    // ⬅️ FIXED — prevent double submission
+    if (submitting) return;
+
     if (!validate()) {
       const first = document.querySelector('[data-error="true"]');
       first?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -150,39 +154,54 @@ export default function PetForm({ mode }: { mode: Mode }) {
     }
     setSubmitting(true);
 
-    // Persist locally so we can pass along context. We then hand off to the
-    // verification/upload server which performs the authoritative storage.
+    // Persist locally so we can pass along context.
     try {
       sessionStorage.setItem('petfindr:submission', JSON.stringify(payloadPreview));
     } catch {
       /* ignore */
     }
 
-    // ⬅️ ADDED — fire webhook BEFORE the redirect, but never let its failure
-    // block the redirect to the verify/upload server.
+    // ⬅️ FIXED — fire webhook with NO custom headers (kills CORS preflight)
+    //             and NO keepalive (we await it before navigating).
+    let webhookOk = false;
+    let webhookStatus = 0;
     try {
-      await fetch(PETFINDR_WEBHOOK_URL, {
+      const webhookPayload = buildWebhookPayload();
+      // Log exactly what we're about to send — helps debugging in DevTools
+      console.log('[PetFindr] POSTing webhook payload →', PETFINDR_WEBHOOK_URL, webhookPayload);
+
+      const res = await fetch(PETFINDR_WEBHOOK_URL, {
         method: 'POST',
         headers: {
+          // Only Content-Type — this is a "simple request", no preflight.
           'Content-Type': 'application/json',
-          // webhook.site accepts simple POSTs; this header is harmless
-          // elsewhere and helps downstream consumers identify the source app.
-          'X-PetFindr-Source': 'web-report-form',
         },
-        body: JSON.stringify(buildWebhookPayload()),
-        // 'keepalive' lets the request finish even if the tab navigates away.
-        keepalive: true,
+        body: JSON.stringify(webhookPayload),
+        // NO keepalive: we await the fetch and only then start the redirect.
       });
+
+      webhookStatus = res.status;
+      webhookOk = res.ok;
+      console.log(`[PetFindr] webhook responded ${res.status} ${res.statusText}`);
     } catch (err) {
-      // Non-fatal: webhook.site may be down / blocked by an ad-blocker.
-      // The authoritative record is still created on the verify server.
-      console.warn('[PetFindr] webhook delivery failed:', err);
+      // Most common cause here: ad-blocker, Brave Shields, Firefox ETP,
+      // uBlock Origin, or corporate firewall blocking webhook.site.
+      console.error('[PetFindr] webhook delivery FAILED:', err);
+    }
+
+    if (!webhookOk) {
+      // Surface a visible warning so you never again wonder if it worked.
+      console.warn(
+        `[PetFindr] ⚠️ Webhook did NOT succeed (status=${webhookStatus}). ` +
+          `Check DevTools → Network for a blocked/failed request to ${PETFINDR_WEBHOOK_URL}. ` +
+          `Common cause: ad-blocker or privacy extension blocking webhook.site. ` +
+          `Test in an Incognito window with extensions disabled.`
+      );
     }
 
     // Show the informational redirect panel, then navigate.
     setShowRedirect(true);
     setTimeout(() => {
-      // Redirect the browser to the verification / upload endpoint.
       window.location.href = VERIFY_ENDPOINT;
     }, 2200);
   }
@@ -558,4 +577,3 @@ export default function PetForm({ mode }: { mode: Mode }) {
     </form>
   );
 }
-```
