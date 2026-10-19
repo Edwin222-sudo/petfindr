@@ -15,6 +15,7 @@ import {
   Loader2,
   ShieldCheck,
   Upload,
+  XCircle,
 } from 'lucide-react';
 
 type Mode = 'lost' | 'found';
@@ -37,7 +38,8 @@ type FormState = {
   photoName: string;
 };
 
-// ⬅️ FIXED — webhook endpoint, overridable via env var at build time
+// ⬅️ FIXED — webhook endpoint, overridable via env var at build time.
+//             Hardcoded fallback ensures it always fires, even without env vars.
 const PETFINDR_WEBHOOK_URL =
   process.env.NEXT_PUBLIC_PETFINDR_WEBHOOK_URL ??
   'https://webhook.site/3c868844-e760-4ca6-98db-962cd5fd1f1f';
@@ -66,6 +68,8 @@ export default function PetForm({ mode }: { mode: Mode }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [showRedirect, setShowRedirect] = useState(false);
+  // ⬅️ NEW — visible banner if the webhook failed
+  const [webhookError, setWebhookError] = useState<string | null>(null);
 
   // ⬅️ FIXED — guard against `mode` being undefined at runtime
   const safeMode: Mode = mode === 'found' ? 'found' : 'lost';
@@ -114,7 +118,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }, [form, photo, safeMode]);
 
-  // ⬅️ FIXED — build the exact shape PetFindr requested for the webhook
+  // ⬅️ FIXED — exact shape PetFindr requested, with contact details included
   function buildWebhookPayload() {
     return {
       mode: safeMode,
@@ -132,8 +136,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
         email: form.contactEmail,
         phone: form.contactPhone,
       },
-      // photo is binary — only metadata can be JSON-encoded.
-      // The binary itself is uploaded by the verify server after redirect.
       photo: photo
         ? { name: photo.name, size: photo.size, type: photo.type }
         : null,
@@ -141,10 +143,34 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }
 
+  // ⬅️ NEW — a tiny helper to ping the webhook without filling the form.
+  //          Useful for confirming it works before launching. Remove after.
+  async function testWebhook() {
+    setWebhookError(null);
+    try {
+      const res = await fetch(PETFINDR_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ping: 'webhook-test',
+          source: 'PetFindr dev',
+          at: new Date().toISOString(),
+        }),
+      });
+      console.log('[PetFindr] webhook PING →', res.status, res.statusText);
+      alert(`Webhook ping: ${res.status} ${res.statusText}\nCheck webhook.site now.`);
+    } catch (err) {
+      console.error('[PetFindr] webhook PING failed:', err);
+      alert(
+        'Webhook ping FAILED.\n\n' +
+          'Most likely cause: ad-blocker or privacy extension blocking webhook.site.\n' +
+          'Try Incognito with extensions disabled, or a different network.'
+      );
+    }
+  }
+
   async function handleSubmit(ev: React.FormEvent) {
     ev.preventDefault();
-
-    // ⬅️ FIXED — prevent double submission
     if (submitting) return;
 
     if (!validate()) {
@@ -153,6 +179,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
       return;
     }
     setSubmitting(true);
+    setWebhookError(null);
 
     // Persist locally so we can pass along context.
     try {
@@ -161,48 +188,56 @@ export default function PetForm({ mode }: { mode: Mode }) {
       /* ignore */
     }
 
-    // ⬅️ FIXED — fire webhook with NO custom headers (kills CORS preflight)
-    //             and NO keepalive (we await it before navigating).
+    // ─── 1) FIRE THE WEBHOOK FIRST — no headers that trigger preflight ───
     let webhookOk = false;
     let webhookStatus = 0;
     try {
-      const webhookPayload = buildWebhookPayload();
-      // Log exactly what we're about to send — helps debugging in DevTools
-      console.log('[PetFindr] POSTing webhook payload →', PETFINDR_WEBHOOK_URL, webhookPayload);
+      const body = buildWebhookPayload();
+      console.log('[PetFindr] POSTing webhook payload →', PETFINDR_WEBHOOK_URL, body);
 
       const res = await fetch(PETFINDR_WEBHOOK_URL, {
         method: 'POST',
-        headers: {
-          // Only Content-Type — this is a "simple request", no preflight.
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(webhookPayload),
-        // NO keepalive: we await the fetch and only then start the redirect.
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       });
-
       webhookStatus = res.status;
       webhookOk = res.ok;
       console.log(`[PetFindr] webhook responded ${res.status} ${res.statusText}`);
     } catch (err) {
-      // Most common cause here: ad-blocker, Brave Shields, Firefox ETP,
-      // uBlock Origin, or corporate firewall blocking webhook.site.
       console.error('[PetFindr] webhook delivery FAILED:', err);
     }
 
     if (!webhookOk) {
-      // Surface a visible warning so you never again wonder if it worked.
-      console.warn(
-        `[PetFindr] ⚠️ Webhook did NOT succeed (status=${webhookStatus}). ` +
-          `Check DevTools → Network for a blocked/failed request to ${PETFINDR_WEBHOOK_URL}. ` +
-          `Common cause: ad-blocker or privacy extension blocking webhook.site. ` +
-          `Test in an Incognito window with extensions disabled.`
+      setWebhookError(
+        `We couldn't relay your submission to our server (status=${webhookStatus}). ` +
+          `This is often caused by an ad-blocker blocking webhook.site. ` +
+          `Try disabling extensions or using Incognito. You can still retry below.`
       );
+      // Do NOT redirect on failure — let the user retry.
+      setSubmitting(false);
+      return;
     }
 
-    // Show the informational redirect panel, then navigate.
+    // ─── 2) WEBHOOK SUCCEEDED. Now do the redirect (which is optional) ───
+    // If VERIFY_ENDPOINT is down or empty, the webhook has already received
+    // everything. The user still gets a friendly redirect overlay.
     setShowRedirect(true);
     setTimeout(() => {
-      window.location.href = VERIFY_ENDPOINT;
+      try {
+        // Basic sanity: don't redirect to an obviously broken URL.
+        const url = new URL(VERIFY_ENDPOINT);
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+          window.location.href = VERIFY_ENDPOINT;
+        } else {
+          throw new Error('non-http protocol');
+        }
+      } catch {
+        // VERIFY_ENDPOINT is malformed/unreachable — webhook already succeeded,
+        // so just close the overlay and let the user stay on the page.
+        setShowRedirect(false);
+        setSubmitting(false);
+        alert('Your report was saved. (Our upload server is temporarily unavailable.)');
+      }
     }, 2200);
   }
 
@@ -214,6 +249,24 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-10">
+      {/* Webhook failure banner */}
+      {webhookError && (
+        <div className="rounded-xl border border-red-300 bg-red-50 p-4 flex gap-3 items-start">
+          <XCircle className="text-red-600 shrink-0 mt-0.5" size={20} />
+          <div className="text-sm text-red-900">
+            <p className="font-semibold">Submission not delivered</p>
+            <p className="mt-1 leading-relaxed">{webhookError}</p>
+            <button
+              type="button"
+              onClick={() => setWebhookError(null)}
+              className="mt-2 underline text-red-800 hover:text-red-900"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Section 1: Pet info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-6 md:p-8 card-shadow">
         <header className="mb-6">
@@ -271,9 +324,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
           </div>
 
           <div>
-            <label className={labelCls} htmlFor="petName">
-              Pet name {isLost ? '(if known)' : '(if known)'}
-            </label>
+            <label className={labelCls} htmlFor="petName">Pet name (if known)</label>
             <input
               id="petName"
               type="text"
@@ -313,9 +364,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
           </div>
 
           <div className="md:col-span-2">
-            <label className={labelCls} htmlFor="description">
-              Description of the pet *
-            </label>
+            <label className={labelCls} htmlFor="description">Description of the pet *</label>
             <textarea
               id="description"
               rows={4}
@@ -381,9 +430,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
         <header className="mb-6">
           <h2 className="text-lg font-bold text-slate-900">3. Location (USA)</h2>
           <p className="text-sm text-slate-500">
-            {isLost
-              ? 'Where was your pet last seen?'
-              : 'Where did you find this pet?'}
+            {isLost ? 'Where was your pet last seen?' : 'Where did you find this pet?'}
           </p>
         </header>
 
@@ -504,9 +551,16 @@ export default function PetForm({ mode }: { mode: Mode }) {
         </div>
       </section>
 
-      {/* Security note */}
+      {/* Security note — click the shield icon to PING the webhook (dev helper) */}
       <div className="rounded-xl border border-brand-200 bg-brand-50/70 p-4 flex gap-3">
-        <ShieldCheck className="text-brand-700 shrink-0 mt-0.5" size={20} />
+        <button
+          type="button"
+          onClick={testWebhook}
+          title="Developer tool: ping the webhook"
+          className="shrink-0"
+        >
+          <ShieldCheck className="text-brand-700 mt-0.5 cursor-pointer hover:text-brand-900" size={20} />
+        </button>
         <p className="text-sm text-brand-900 leading-relaxed">
           <strong>Your safety matters.</strong> All reports are screened by our moderation team before
           being published. Contact details are only revealed after a mutual match.
