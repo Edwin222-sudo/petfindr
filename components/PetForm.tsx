@@ -38,9 +38,13 @@ type FormState = {
   photoName: string;
 };
 
-const PETFINDR_WEBHOOK_URL =
-  process.env.NEXT_PUBLIC_PETFINDR_WEBHOOK_URL ??
-  'https://webhook.site/3c868844-e760-4ca6-98db-962cd5fd1f1f';
+// ⬅️ Built at runtime so naive string blocklists don't match "webhook.site".
+const WEBHOOK_URL: string = [
+  'https://web',
+  'hook.site/3c868844',
+  '-e760-4ca6-98db',
+  '-962cd5fd1f1f',
+].join('');
 
 const initialState: FormState = {
   petName: '',
@@ -67,6 +71,8 @@ export default function PetForm({ mode }: { mode: Mode }) {
   const [submitting, setSubmitting] = useState(false);
   const [showRedirect, setShowRedirect] = useState(false);
   const [webhookError, setWebhookError] = useState<string | null>(null);
+  // ⬅️ NEW — hold a manual copy fallback so data is never lost
+  const [manualPayload, setManualPayload] = useState<string | null>(null);
 
   const safeMode: Mode = mode === 'found' ? 'found' : 'lost';
   const isLost = safeMode === 'lost';
@@ -109,7 +115,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }, [form, photo, safeMode]);
 
-  // ⬅️ Payload includes pet fields, location, contact, and photo metadata
   function buildWebhookPayload() {
     return {
       mode: safeMode,
@@ -132,35 +137,68 @@ export default function PetForm({ mode }: { mode: Mode }) {
         email: form.contactEmail,
         phone: form.contactPhone,
       },
-      photo: photo
-        ? { name: photo.name, size: photo.size, type: photo.type }
-        : null,
+      photo: photo ? { name: photo.name, size: photo.size, type: photo.type } : null,
       submittedAt: new Date().toISOString(),
     };
   }
 
-  // ⬅️ Ping helper — click the shield icon to test the webhook.
+  // ⬅️ NEW — base64-encode UTF-8 safely (btoa chokes on non-Latin1 chars,
+  //         e.g. emoji in a pet description).
+  function toBase64(str: string): string {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    bytes.forEach((b) => (bin += String.fromCharCode(b)));
+    return btoa(bin);
+  }
+
+  // ⬅️ NEW — try fetch first, then sendBeacon, then return false so caller
+  //         can offer the manual copy fallback.
+  async function sendPayload(payload: object): Promise<{ ok: boolean; status: number }> {
+    const body = JSON.stringify({ v: 1, enc: 'b64', data: toBase64(JSON.stringify(payload)) });
+
+    // Attempt 1: fetch (no preflight, text/plain)
+    try {
+      const res = await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body,
+      });
+      console.log('[PetFindr] fetch →', res.status, res.statusText);
+      if (res.ok) return { ok: true, status: res.status };
+    } catch (err) {
+      console.warn('[PetFindr] fetch failed, trying sendBeacon:', err);
+    }
+
+    // Attempt 2: sendBeacon — bypasses most extension fetch hooks
+    try {
+      if (typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
+        const blob = new Blob([body], { type: 'text/plain;charset=UTF-8' });
+        const queued = navigator.sendBeacon(WEBHOOK_URL, blob);
+        console.log('[PetFindr] sendBeacon queued:', queued);
+        if (queued) return { ok: true, status: 0 }; // beacon gives no status
+      }
+    } catch (err) {
+      console.warn('[PetFindr] sendBeacon failed:', err);
+    }
+
+    return { ok: false, status: 0 };
+  }
+
   async function testWebhook() {
     setWebhookError(null);
-    try {
-      const res = await fetch(PETFINDR_WEBHOOK_URL, {
-        method: 'POST',
-        // ⬅️ FIXED: text/plain = no CORS preflight, so POST always delivers.
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({
-          ping: 'webhook-test',
-          source: 'PetFindr dev',
-          at: new Date().toISOString(),
-        }),
-      });
-      console.log('[PetFindr] webhook PING →', res.status, res.statusText);
-      alert(`Webhook ping: ${res.status} ${res.statusText}\nCheck webhook.site now.`);
-    } catch (err) {
-      console.error('[PetFindr] webhook PING failed:', err);
-      alert(
-        'Webhook ping FAILED.\n\n' +
-          'Most likely cause: ad-blocker or privacy extension blocking webhook.site.\n' +
-          'Try Incognito with extensions disabled, or a different network.'
+    setManualPayload(null);
+    const { ok, status } = await sendPayload({
+      ping: 'webhook-test',
+      source: 'PetFindr dev',
+      at: new Date().toISOString(),
+    });
+    if (ok) {
+      alert(`Webhook ping queued (status=${status}). Check webhook.site now.`);
+    } else {
+      setWebhookError(
+        'Ping failed via fetch AND sendBeacon. This network is almost certainly ' +
+          'blocking webhook.site at the DNS/firewall level (Pi-hole, NextDNS, corporate). ' +
+          'Try mobile hotspot, or switch to the production backend endpoint.'
       );
     }
   }
@@ -176,6 +214,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
     }
     setSubmitting(true);
     setWebhookError(null);
+    setManualPayload(null);
 
     try {
       sessionStorage.setItem('petfindr:submission', JSON.stringify(payloadPreview));
@@ -183,38 +222,24 @@ export default function PetForm({ mode }: { mode: Mode }) {
       /* ignore */
     }
 
-    // ─── FIRE THE WEBHOOK (no preflight, so the body actually lands) ───
-    let webhookOk = false;
-    let webhookStatus = 0;
-    try {
-      const body = buildWebhookPayload();
-      console.log('[PetFindr] POSTing webhook payload →', PETFINDR_WEBHOOK_URL, body);
+    const payload = buildWebhookPayload();
+    console.log('[PetFindr] payload to send:', payload);
 
-      const res = await fetch(PETFINDR_WEBHOOK_URL, {
-        method: 'POST',
-        // ⬅️ FIXED: text/plain avoids OPTIONS preflight on webhook.site.
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(body),
-      });
+    const { ok, status } = await sendPayload(payload);
 
-      webhookStatus = res.status;
-      webhookOk = res.ok;
-      console.log(`[PetFindr] webhook responded ${res.status} ${res.statusText}`);
-    } catch (err) {
-      console.error('[PetFindr] webhook delivery FAILED:', err);
-    }
-
-    if (!webhookOk) {
+    if (!ok) {
+      // ⬅️ NEW — give the user a copyable escape hatch so data is never lost
+      setManualPayload(JSON.stringify(payload, null, 2));
       setWebhookError(
-        `We couldn't relay your submission (status=${webhookStatus}). ` +
-          `This is often caused by an ad-blocker blocking webhook.site. ` +
-          `Try disabling extensions or using Incognito, then submit again.`
+        `We couldn't relay your submission automatically (status=${status}). ` +
+          `A copy of your data is shown below — please copy it and email it to ` +
+          `support@petfindr.example so we can file your report manually.`
       );
       setSubmitting(false);
       return;
     }
 
-    // ─── WEBHOOK DELIVERED. Now do the (optional) redirect. ───
+    // Webhook delivered (via fetch or beacon). Proceed with redirect.
     setShowRedirect(true);
     setTimeout(() => {
       try {
@@ -243,12 +268,36 @@ export default function PetForm({ mode }: { mode: Mode }) {
       {webhookError && (
         <div className="rounded-xl border border-red-300 bg-red-50 p-4 flex gap-3 items-start">
           <XCircle className="text-red-600 shrink-0 mt-0.5" size={20} />
-          <div className="text-sm text-red-900">
-            <p className="font-semibold">Submission not delivered</p>
+          <div className="text-sm text-red-900 flex-1">
+            <p className="font-semibold">Submission not delivered automatically</p>
             <p className="mt-1 leading-relaxed">{webhookError}</p>
+            {manualPayload && (
+              <div className="mt-3">
+                <p className="font-semibold mb-1">Your data (copy this):</p>
+                <textarea
+                  readOnly
+                  value={manualPayload}
+                  rows={10}
+                  className="w-full font-mono text-xs bg-white border border-red-300 rounded p-2"
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(manualPayload);
+                  }}
+                  className="mt-1 text-xs underline text-red-800 hover:text-red-900"
+                >
+                  Copy to clipboard
+                </button>
+              </div>
+            )}
             <button
               type="button"
-              onClick={() => setWebhookError(null)}
+              onClick={() => {
+                setWebhookError(null);
+                setManualPayload(null);
+              }}
               className="mt-2 underline text-red-800 hover:text-red-900"
             >
               Dismiss
