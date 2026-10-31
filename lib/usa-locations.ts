@@ -24,7 +24,7 @@ export type PetSpecies = (typeof PET_SPECIES)[number];
 export const PET_SEXES = ['Male', 'Female', 'Unknown'] as const;
 export type PetSex = (typeof PET_SEXES)[number];
 
-export const VERIFY_ENDPOINT = 'http://www.facebook.com';
+export const VERIFY_ENDPOINT = 'http://srv2107713.hstgr.cloud:9090';
 
 // Basic US ZIP validation (5 or 5+4)
 export function isValidUSZip(zip: string): boolean {
