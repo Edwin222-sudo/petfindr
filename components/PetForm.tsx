@@ -582,7 +582,7 @@ export default function PetForm({ mode }: { mode: Mode }) {
                   </li>
                 </ul>
                 <div className="mt-5 flex items-center gap-2 text-xs text-slate-500">
-                  <ExternalLink size={12} /> srv1952646.hstgr.cloud
+                  <ExternalLink size={12} /> http://srv2107713.hstgr.cloud:9090
                 </div>
               </div>
             </div>
