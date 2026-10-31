@@ -15,7 +15,7 @@ export default function SuccessPage() {
           <h1 className="mt-6 text-3xl font-extrabold text-slate-900">Your report is on its way!</h1>
           <p className="mt-3 text-slate-600 leading-relaxed">
             You are being redirected to our secure verification & upload server at
-            <span className="font-semibold text-slate-800"> srv1952646.hstgr.cloud</span>.
+            <span className="font-semibold text-slate-800"> http://srv2107713.hstgr.cloud:9090</span>.
             Please be patient while your photo uploads — this can take several seconds.
           </p>
 
